@@ -7,6 +7,12 @@ ENDPOINT = "https://ask-saju-42xetdarfa-uc.a.run.app"
 USER_NAME  = "홍승창"
 SESSION_ID = "single_global_session"   # 필요시 다른 값으로 변경
 
+# 새로운 경로 구조용 (선택사항)
+# 앱 UID가 있으면: gs://bucket/users/<앱UID>/profiles/<user_id>.json
+# 없으면 기존 방식으로 폴백: gs://bucket/<user_id>.json
+# user_id는 make_user_id_from_name(user_name)으로 자동 생성됨
+APP_UID = "hsc6320"      # 예: "firebase-auth-uid-123" 또는 None
+
 BASE_PAYLOAD = {
     "name": USER_NAME,
     "question": "",
@@ -19,12 +25,14 @@ BASE_PAYLOAD = {
     "currentDaewoon": "계해",
     "currDaewoonGan" : "계", "currDaewoonJi" : "해",
     "reset" : "false",
+    # 새로운 경로 구조용 (APP_UID가 설정되어 있으면 자동 포함)
+    **({"app_uid": APP_UID} if APP_UID else {}),
 }
 
 # ---------- 공통 POST: 429/5xx 지수 백오프 ----------
 def post_raw(payload: dict, *, max_retries: int = 3, base_sleep: float = 0.8):
-    # 매 요청에 세션/이름을 자동 포함
-    payload = {"session_id": SESSION_ID, "name": USER_NAME, **payload}
+    # 매 요청에 세션/이름을 자동 포함 (BASE_PAYLOAD에 이미 app_uid 포함됨)
+    payload = {"session_id": SESSION_ID, **payload}
     last_err = None
 
     for attempt in range(max_retries + 1):
@@ -79,19 +87,65 @@ def post_raw(payload: dict, *, max_retries: int = 3, base_sleep: float = 0.8):
     return {"_error": True, "exception": str(last_err) if last_err else "unknown"}
 
 # ---------- 기능 함수들 ----------
+# def send_reset_only(val: str | None = None) -> str:
+#     """대화방 삭제/초기화 신호만 전송. 기본값 reset='true'."""
+#     v = val if val is not None else "true"
+#     data = post_raw({"reset": v})
+#     return json.dumps(data, ensure_ascii=False, indent=2)
+
+# def delete_conversation() -> str:
+#     """가독성 별칭: reset=true"""
+#     return send_reset_only("true")
+
 def send_reset_only(val: str | None = None) -> str:
-    """대화방 삭제/초기화 신호만 전송. 기본값 reset='true'."""
-    v = val if val is not None else "true"
-    data = post_raw({"reset": v})
+    """
+    대화방 삭제/초기화 신호 전송.
+    - reset: True (bool)
+    - name, app_uid 같이 보내서 저장되는 프로필과 동일한 키로 초기화
+    """
+    v = val if val is not None else True  # 문자열 대신 bool 권장
+
+    payload = {
+        "reset": v,
+        "name": USER_NAME,
+    }
+
+    # APP_UID가 있으면 같이 전송 (저장도 이 기준으로 되어 있기 때문)
+    if APP_UID:
+        payload["app_uid"] = APP_UID
+
+    data = post_raw(payload)
     return json.dumps(data, ensure_ascii=False, indent=2)
+
 
 def delete_conversation() -> str:
     """가독성 별칭: reset=true"""
-    return send_reset_only("true")
+    return send_reset_only(True)
+
+
+# def fetch_history_only() -> str:
+#     """대화 불러오기 전용: fetch_history=true 만 전송"""
+#     data = post_raw({"fetch_history": "true"})
+#     if isinstance(data, dict) and "history" in data:
+#         return json.dumps(data["history"], ensure_ascii=False, indent=2)
+#     return json.dumps(data, ensure_ascii=False, indent=2)
 
 def fetch_history_only() -> str:
-    """대화 불러오기 전용: fetch_history=true 만 전송"""
-    data = post_raw({"fetch_history": "true"})
+    """
+    대화 불러오기 전용: fetch_history=true 전송.
+    app_uid / name도 같이 보내서 서버가 같은 프로필 JSON을 찾을 수 있게 함.
+    """
+    payload = {
+        "fetch_history": "true",
+        "name": USER_NAME,
+    }
+
+    # APP_UID가 설정되어 있다면 같이 전송 (저장할 때도 이걸로 경로를 만들기 때문)
+    if APP_UID:
+        payload["app_uid"] = APP_UID
+
+    data = post_raw(payload)
+
     if isinstance(data, dict) and "history" in data:
         return json.dumps(data["history"], ensure_ascii=False, indent=2)
     return json.dumps(data, ensure_ascii=False, indent=2)
