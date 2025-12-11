@@ -30,8 +30,7 @@ BASE_PAYLOAD = {
 }
 
 # ---------- 공통 POST: 429/5xx 지수 백오프 ----------
-def post_raw(payload: dict, *, max_retries: int = 3, base_sleep: float = 0.8):
-    # 매 요청에 세션/이름을 자동 포함 (BASE_PAYLOAD에 이미 app_uid 포함됨)
+def post_raw(payload: dict, *, max_retries: int = 8, base_sleep: float = 0.8):
     payload = {"session_id": SESSION_ID, **payload}
     last_err = None
 
@@ -39,29 +38,35 @@ def post_raw(payload: dict, *, max_retries: int = 3, base_sleep: float = 0.8):
         try:
             r = requests.post(ENDPOINT, json=payload, timeout=60)
 
-            # 429/5xx는 재시도
-            if r.status_code == 429 or 500 <= r.status_code < 600:
+            # ⭐ 202, 429, 5xx는 재시도 (202 추가!)
+            if r.status_code == 202 or r.status_code == 429 or 500 <= r.status_code < 600:
                 if attempt == max_retries:
-                    # 마지막 시도면 에러 본문 포함해서 반환
                     return {
                         "_error": True,
                         "status": r.status_code,
                         "headers": dict(r.headers),
                         "text": r.text[:2000],
                     }
-                # Retry-After 우선 존중
-                retry_after = r.headers.get("Retry-After")
-                if retry_after:
-                    try:
-                        delay = float(retry_after)
-                    except ValueError:
-                        delay = base_sleep * (2 ** attempt)
+                
+                # 202 처리 중일 때는 짧은 대기
+                if r.status_code == 202:
+                    delay = min(2.0 + attempt * 1.0, 10.0)  # ⭐ 점진적 증가, 최대 10초
+                    print(f"⏳ 이전 요청 처리 중... {delay}초 후 재시도 ({attempt+1}/{max_retries+1})")
                 else:
-                    delay = base_sleep * (2 ** attempt) + random.uniform(0, 0.3)
+                    # 429/5xx는 지수 백오프
+                    retry_after = r.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            delay = float(retry_after)
+                        except ValueError:
+                            delay = base_sleep * (2 ** attempt)
+                    else:
+                        delay = base_sleep * (2 ** attempt) + random.uniform(0, 0.3)
+                
                 time.sleep(delay)
                 continue
 
-            # 그 외 상태코드 처리
+            # 그 외 400번대 에러
             if r.status_code >= 400:
                 return {
                     "_error": True,
@@ -83,7 +88,6 @@ def post_raw(payload: dict, *, max_retries: int = 3, base_sleep: float = 0.8):
             delay = base_sleep * (2 ** attempt) + random.uniform(0, 0.3)
             time.sleep(delay)
 
-    # 여기 오지 않지만 안전망
     return {"_error": True, "exception": str(last_err) if last_err else "unknown"}
 
 # ---------- 기능 함수들 ----------
